@@ -6,7 +6,7 @@ from stc_core import validate_tree, canon_edge, CongestionResult
 
 
 #drawing helper
-def _default_draw_pos(G: nx.Graph, seed: int = 0):
+def _default_draw_pos(G: nx.Graph):
     """
     Choose a drawing layout.
 
@@ -23,7 +23,7 @@ def _default_draw_pos(G: nx.Graph, seed: int = 0):
         from networkx.drawing.nx_pydot import graphviz_layout
         return graphviz_layout(G, prog="neato")
     except Exception:
-        return nx.spring_layout(G, seed=seed)
+        return nx.spring_layout(G)
 
 #drawing helper
 def draw_graph(
@@ -35,10 +35,9 @@ def draw_graph(
         with_labels: bool = True,
         save_path: str | Path | None = None,
         show: bool = True,
-        seed: int = 0,
 ):
     if pos is None:
-        pos = _default_draw_pos(G, seed=seed)
+        pos = _default_draw_pos(G)
 
     plt.figure(figsize=(8, 6))
     nx.draw_networkx(G, pos=pos, with_labels=with_labels, node_size=node_size, edge_color="gray")
@@ -67,10 +66,9 @@ def draw_tree(
         with_labels: bool = True,
         save_path: str | Path | None = None,
         show: bool = True,
-        seed: int = 0,
 ):
     if pos is None:
-        pos = _default_draw_pos(T, seed=seed)
+        pos = _default_draw_pos(T)
 
     nx.draw_networkx(T, pos=pos, with_labels=with_labels, node_size=node_size, edge_color="tab:red", width=2.5)
 
@@ -108,7 +106,6 @@ def draw_graph_with_tree(
         highlight_worst_edges: bool = True,
         save_path: str | Path | None = None,
         show: bool = True,
-        seed: int = 0,
 ):
     """
     - non-tree edges: light gray dashed
@@ -120,7 +117,7 @@ def draw_graph_with_tree(
     validate_tree(G, T)
 
     if pos is None:
-        pos = _default_draw_pos(G, seed=seed)
+        pos = _default_draw_pos(G)
 
     tree_edges = {canon_edge(u, v) for u, v in T.edges()}
     non_tree_edges = []
