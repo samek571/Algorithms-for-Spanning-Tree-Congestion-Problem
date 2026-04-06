@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import time
+import signal
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Sequence
@@ -33,6 +34,12 @@ class MethodRun:
     max_congestion: int
     congestion: object | None = None
 
+METHOD_TIMEOUT_SECONDS = 60
+class _MethodTimeout(Exception):
+    pass
+
+def _timeout_handler(signum, frame):
+    raise _MethodTimeout()
 
 def _draw_output_path(drawings_root: str | Path, input_root: str | Path, instance: GraphInstance, method: str) -> Path:
     drawings_root = Path(drawings_root)
@@ -44,8 +51,7 @@ def _draw_output_path(drawings_root: str | Path, input_root: str | Path, instanc
     subdir.mkdir(parents=True, exist_ok=True)
     return subdir / f"drawing_of_{instance.graph_label}__{method}.png"
 
-
-def _run_method(G: nx.Graph, method: str) -> MethodRun:
+def _run_method(G: nx.Graph, method: str, *, okamoto_upper_bound: int | None = None) -> MethodRun:
     # baseline just to verify stuff
     if method == "bfs":
         start = time.perf_counter()
@@ -56,6 +62,11 @@ def _run_method(G: nx.Graph, method: str) -> MethodRun:
 
     if method == "okamoto_exact":
         result = stc_okamoto.okamoto_exact_stc_simple(G)
+        congestion = compute_tree_congestion(G, result.tree)
+        if congestion.max_congestion != result.optimum_congestion:
+            raise RuntimeError(
+                f"Okamoto DP/tree mismatch: dp={result.optimum_congestion}, measured={congestion.max_congestion}"
+            )
         return MethodRun(
             tree=result.tree,
             runtime_seconds=result.solve_time_seconds,
@@ -97,14 +108,22 @@ def run_method_on_graph(
         draw: bool = True,
         drawings_root: str | Path | None = None,
         input_root: str | Path | None = None,
+        okamoto_upper_bound: int | None = None,
+        timeout_seconds: int = METHOD_TIMEOUT_SECONDS,
 ) -> ExperimentRow:
     row = _make_row(instance, method)
+    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
 
     try:
-        run = _run_method(instance.graph, method)
+        run = _run_method(instance.graph, method, okamoto_upper_bound=okamoto_upper_bound)
+        signal.setitimer(signal.ITIMER_REAL, 0)
         row.max_congestion = run.max_congestion
         row.runtime_seconds = run.runtime_seconds
         row.status = "ok"
+
+        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
 
         if draw and drawings_root is not None and input_root is not None:
             congestion = run.congestion
@@ -120,6 +139,9 @@ def run_method_on_graph(
                 save_path=out_path,
                 show=False,
             )
+    except _MethodTimeout:
+        row.status = "TLE"
+        row.runtime_seconds = float(timeout_seconds)
     except ValueError as e:
         msg = str(e)
         if "exponential" in msg.lower() or "too large" in msg.lower() or "n <=" in msg.lower():
@@ -128,9 +150,11 @@ def run_method_on_graph(
             row.status = "invalid_graph"
     except Exception:
         row.status = "failed"
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old_handler)
 
     return row
-
 
 def run_graph_instance(
         instance: GraphInstance,
@@ -138,18 +162,60 @@ def run_graph_instance(
         draw: bool = True,
         drawings_root: str | Path | None = None,
         input_root: str | Path | None = None,
+        timeout_seconds: int = METHOD_TIMEOUT_SECONDS,
 ) -> list[ExperimentRow]:
     rows: list[ExperimentRow] = []
-    for method in ["bfs", "kolman_exact_cut", "okamoto_exact"]:
-        rows.append(
-            run_method_on_graph(
-                instance,
-                method,
-                draw=draw,
-                drawings_root=drawings_root,
-                input_root=input_root,
-            )
-        )
+
+    bfs_row = run_method_on_graph(
+        instance,
+        "bfs",
+        draw=draw,
+        drawings_root=drawings_root,
+        input_root=input_root,
+        timeout_seconds=timeout_seconds,
+    )
+    rows.append(bfs_row)
+
+    kolman_row = run_method_on_graph(
+        instance,
+        "kolman_exact_cut",
+        draw=draw,
+        drawings_root=drawings_root,
+        input_root=input_root,
+        timeout_seconds=timeout_seconds,
+    )
+    rows.append(kolman_row)
+
+    upper_bounds = [
+        row.max_congestion
+        for row in (bfs_row, kolman_row)
+        if row.status == "ok" and row.max_congestion is not None
+    ]
+    okamoto_upper_bound = min(upper_bounds) if upper_bounds else None
+
+    okamoto_row = run_method_on_graph(
+        instance,
+        "okamoto_exact",
+        draw=draw,
+        drawings_root=drawings_root,
+        input_root=input_root,
+        okamoto_upper_bound=okamoto_upper_bound,
+    )
+    rows.append(okamoto_row)
+
+    if okamoto_row.status == "ok":
+        for other in (bfs_row, kolman_row):
+            if (
+                    other.status == "ok"
+                    and other.max_congestion is not None
+                    and okamoto_row.max_congestion is not None
+                    and okamoto_row.max_congestion > other.max_congestion
+            ):
+                raise RuntimeError(
+                    f"Exact result worse than {other.method} on "
+                    f"{instance.graph_family}/{instance.graph_label}: "
+                    f"exact={okamoto_row.max_congestion}, {other.method}={other.max_congestion}"
+                )
     return rows
 
 
@@ -161,7 +227,10 @@ def write_results_csv(rows: Sequence[ExperimentRow], path: str | Path) -> None:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            writer.writerow(asdict(row))
+            data = asdict(row)
+            if data["runtime_seconds"] is not None:
+                data["runtime_seconds"] = round(data["runtime_seconds"], 2)
+            writer.writerow(data)
 
 def run_graph_folder(
         input_root: str | Path,
@@ -170,6 +239,7 @@ def run_graph_folder(
         drawings_root: str | Path | None = None,
         normalize_labels_flag: bool = False,
         draw: bool = True,
+        timeout_seconds: int = METHOD_TIMEOUT_SECONDS,
 ) -> list[ExperimentRow]:
     input_root = Path(input_root)
     instances = load_graph_folder(input_root, normalize_labels_flag=normalize_labels_flag,
@@ -186,6 +256,7 @@ def run_graph_folder(
             draw=draw,
             drawings_root=drawings_root,
             input_root=input_root,
+            timeout_seconds=timeout_seconds,
         )
 
         for row in graph_rows:
@@ -215,7 +286,10 @@ if __name__ == "__main__":
     parser.add_argument("output_csv", nargs="?", default=str(default_output), help="Where to write CSV results")
     parser.add_argument("--drawings-root", default=str(default_drawings), help="Root directory for saved drawings")
     parser.add_argument("--normalize-labels", action="store_true")
-    parser.add_argument("--draw", action="store_true")
+    # parser.add_argument("--draw", action="store_true")
+    parser.add_argument("--no-draw", action="store_false", dest="draw")
+    parser.set_defaults(draw=True)
+    parser.add_argument("--timeout-seconds", type=int, default=60, help="Per-method timeout in seconds")
 
     args = parser.parse_args()
 
@@ -231,5 +305,6 @@ if __name__ == "__main__":
         drawings_root=args.drawings_root,
         normalize_labels_flag=args.normalize_labels,
         draw=args.draw,
+        timeout_seconds=args.timeout_seconds,
     )
     print(f"Wrote {len(rows)} detailed rows to {args.output_csv}")

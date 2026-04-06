@@ -91,7 +91,7 @@ def _okamoto_decision_from_context(ctx: _OkamotoContext,G: nx.Graph, k: int, *, 
     #dp step
     for size in range(1, n):
         for mask in ctx.masks_by_size[size]: #larger states depend on smaller, bottom up DP bysubset size
-            if ctx.cut_size[mask] > k: continue
+            #if ctx.cut_size[mask] > k: continue
 
             for root in range(n): # for each subset mask dp tries every possible root that is not inside subset
                 #as it is defined mask being outside root...
@@ -107,7 +107,7 @@ def _okamoto_decision_from_context(ctx: _OkamotoContext,G: nx.Graph, k: int, *, 
                     lsb = nbrs & -nbrs
                     u = lsb.bit_length() - 1 #tak vertex u that lies inside mask and is adjecent to root
                     smaller = mask ^ lsb #smaller=mask\{u}
-                    if good[u][smaller]:
+                    if ctx.cut_size[mask] <= k  and good[u][smaller]:
                         good[root][mask] = 1 # we can connect u to root and get valid rooted tree for (root,mask)
                         if return_tree and choice_kind is not None and choice_arg is not None:
                             choice_kind[root][mask] = 1

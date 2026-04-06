@@ -12,12 +12,23 @@ def _default_draw_pos(G: nx.Graph):
 
     Preference:
     1. existing node attribute "pos"
-    2. graphviz layout if available
-    3. spring layout
+    2. planar layout if graph is planar
+    3. graphviz layout if available
+    4. spring layout
     """
     pos_attr = nx.get_node_attributes(G, "pos")
     if len(pos_attr) == G.number_of_nodes():
         return pos_attr
+
+    try:
+        if G.number_of_nodes() <= 1:
+            return {u: (0.0, 0.0) for u in G.nodes()}
+
+        is_planar, embedding = nx.check_planarity(G)
+        if is_planar:
+            return nx.planar_layout(embedding)
+    except Exception:
+        pass
 
     try:
         from networkx.drawing.nx_pydot import graphviz_layout
@@ -34,7 +45,7 @@ def draw_graph(
         node_size: int = 700,
         with_labels: bool = True,
         save_path: str | Path | None = None,
-        show: bool = True,
+        show: bool = False,
 ):
     if pos is None:
         pos = _default_draw_pos(G)
@@ -117,7 +128,7 @@ def draw_graph_with_tree(
     validate_tree(G, T)
 
     if pos is None:
-        pos = _default_draw_pos(G)
+        pos = _default_draw_pos(T)
 
     tree_edges = {canon_edge(u, v) for u, v in T.edges()}
     non_tree_edges = []
@@ -143,10 +154,10 @@ def draw_graph_with_tree(
             if value == congestion.max_congestion:
                 worst.append((u, v))
 
-        nx.draw_networkx_edge_labels(T, pos=pos, edge_labels=edge_labels, font_size=9)
-
         if highlight_worst_edges and worst:
             nx.draw_networkx_edges(T, pos=pos, edgelist=worst, edge_color="orange", width=4.0)
+
+        nx.draw_networkx_edge_labels(T, pos=pos, edge_labels=edge_labels, font_size=9)
 
     if title:
         plt.title(title)
