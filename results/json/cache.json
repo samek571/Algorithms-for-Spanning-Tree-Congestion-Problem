@@ -1,0 +1,32 @@
+{
+  "94911c46fd94d3f0ec3bf0656a3ea8fc_bfs": {
+    "max_congestion": 9,
+    "runtime_seconds": 0.0011201339948456734,
+    "status": "ok"
+  },
+  "94911c46fd94d3f0ec3bf0656a3ea8fc_kolman": {
+    "max_congestion": 8,
+    "runtime_seconds": 0.012003247975371778,
+    "status": "ok"
+  },
+  "94911c46fd94d3f0ec3bf0656a3ea8fc_okamoto_exact": {
+    "max_congestion": 6,
+    "runtime_seconds": 16.57163901499007,
+    "status": "ok"
+  },
+  "94acad5d8d269aebf12d7854bd846f05_bfs": {
+    "max_congestion": 6,
+    "runtime_seconds": 0.00014806899707764387,
+    "status": "ok"
+  },
+  "94acad5d8d269aebf12d7854bd846f05_kolman": {
+    "max_congestion": 8,
+    "runtime_seconds": 0.01294531999155879,
+    "status": "ok"
+  },
+  "94acad5d8d269aebf12d7854bd846f05_okamoto_exact": {
+    "max_congestion": 6,
+    "runtime_seconds": 21.03925008501392,
+    "status": "ok"
+  }
+}

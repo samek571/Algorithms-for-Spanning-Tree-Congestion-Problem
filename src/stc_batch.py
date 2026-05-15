@@ -10,6 +10,7 @@ from typing import Sequence
 import networkx as nx
 
 from src import stc_okamoto, stc_kolman, stc_core
+from src.simple_cache import SimpleCache
 from stc_core import compute_tree_congestion, graph_statistics
 from stc_draw import draw_graph_with_tree
 from stc_io import GraphInstance, load_graph_folder
@@ -73,8 +74,7 @@ def _run_method(G: nx.Graph, method: str, *, okamoto_upper_bound: int | None = N
             max_congestion=result.optimum_congestion,
             congestion=compute_tree_congestion(G, result.tree),
         )
-
-    if method == "kolman_exact_cut":
+    if method == "kolman":
         result = stc_kolman.kolman_main(G)
         return MethodRun(
             tree=result.tree,
@@ -112,12 +112,21 @@ def run_method_on_graph(
         timeout_seconds: int = METHOD_TIMEOUT_SECONDS,
 ) -> ExperimentRow:
     row = _make_row(instance, method)
+
+    cached_data = cache.get(instance.graph, method)
+    if cached_data:
+        row.max_congestion = cached_data["max_congestion"]
+        row.runtime_seconds = cached_data["runtime_seconds"]
+        row.status = cached_data["status"]
+        print("we hit a cache")
+        return row
+
     old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
     signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
-
     try:
         run = _run_method(instance.graph, method, okamoto_upper_bound=okamoto_upper_bound)
         signal.setitimer(signal.ITIMER_REAL, 0)
+
         row.max_congestion = run.max_congestion
         row.runtime_seconds = run.runtime_seconds
         row.status = "ok"
@@ -148,11 +157,23 @@ def run_method_on_graph(
             row.status = "skipped_too_large"
         else:
             row.status = "invalid_graph"
+    except RuntimeError as e:
+        msg = str(e)
+        if "SDP" in msg or "ARV" in msg:
+            row.status = "sdp_failed"
+        else:
+            row.status = "failed"
     except Exception:
         row.status = "failed"
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, old_handler)
+
+    cache.put(instance.graph, method, {
+        "max_congestion": row.max_congestion,
+        "runtime_seconds": row.runtime_seconds,
+        "status": row.status
+    })
 
     return row
 
@@ -163,8 +184,12 @@ def run_graph_instance(
         drawings_root: str | Path | None = None,
         input_root: str | Path | None = None,
         timeout_seconds: int = METHOD_TIMEOUT_SECONDS,
+        kolman_timeout_seconds: int | None = None,
 ) -> list[ExperimentRow]:
     rows: list[ExperimentRow] = []
+
+    if kolman_timeout_seconds is None:
+        kolman_timeout_seconds = timeout_seconds * 5
 
     bfs_row = run_method_on_graph(
         instance,
@@ -178,11 +203,11 @@ def run_graph_instance(
 
     kolman_row = run_method_on_graph(
         instance,
-        "kolman_exact_cut",
+        "kolman",
         draw=draw,
         drawings_root=drawings_root,
         input_root=input_root,
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=kolman_timeout_seconds,
     )
     rows.append(kolman_row)
 
@@ -277,6 +302,8 @@ def run_graph_folder(
 
 if __name__ == "__main__":
     project_root = Path(__file__).resolve().parents[1]
+    CACHE_DIR = project_root / "results" / "json"
+    cache = SimpleCache(CACHE_DIR / "cache.json")
     default_input = project_root / "data"
     default_output = project_root / "results" / "csv" / "batch_results.csv"
     default_drawings = project_root / "results" / "drawings"
@@ -289,7 +316,7 @@ if __name__ == "__main__":
     # parser.add_argument("--draw", action="store_true")
     parser.add_argument("--no-draw", action="store_false", dest="draw")
     parser.set_defaults(draw=True)
-    parser.add_argument("--timeout-seconds", type=int, default=60, help="Per-method timeout in seconds")
+    parser.add_argument("--timeout-seconds", type=int, default=METHOD_TIMEOUT_SECONDS, help="Per-method timeout in seconds")
 
     args = parser.parse_args()
 

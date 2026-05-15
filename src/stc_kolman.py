@@ -4,6 +4,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Set, Optional, Dict, List, Hashable
 import networkx as nx
+
+from src.stc_arv import arv_balanced_cut
 from src.stc_core import (canon_edge, choose_root_by_degree, validate_tree, compute_tree_congestion, CongestionResult,
                           _ensure_small_enough, _DSU, _relabel_graph_to_ints, _compute_cut_sizes)
 
@@ -22,8 +24,7 @@ def dispatcher(H: nx.Graph) -> Set[Node]:
     """ hybrid cut oracle"""
     if H.number_of_nodes() <= MAX_BALANCED_CUT_N:
         return _exact_balanced_cut_simple(H) #exact exponential
-    return _approx_balanced_cut_simple(H) #fast approx heuristic fallback
-
+    return arv_balanced_cut(H)
 
 def _exact_balanced_cut_simple(H: nx.Graph) -> Set[Node]:
     r"""
