@@ -1,13 +1,15 @@
 """
-ARV balanced-cut oracle used inside Kolmans recursive STC heuristic paper
+ARV-based balanced-cut oracle used inside Kolman's recursive STC construction.
 
-Arora-Rao-Vazirani algorithm for 2/3-balanced cut:
-- solve ARV SDP relaxation (unit vectors + spreading + triangle inequalities)
-- round by projection into random directions and sweeping prefixes
-- return cheapest 2/3-balanced cut fount across all projections
+- solves the full ARV SDP relaxation (unit vectors + triangle inequalities
+  + spreading constraint), formulated in CVXPY, solved numerically by SCS
+- rounds by repeated random projection + balanced prefix sweep
 
-Provides the O(sqrt(log n)) approximation guarantee required by Theorem 1 of
-Kolman 2025, when used as the cut oracle inside the recursive construction.
+Note: the rounding is a simplified version of the ARV paper's procedure.
+The full rounding (seed-set selection, pair refinement, Frechet-embedding
+sweep) is what the O(sqrt(log n)) guarantee of ARV / Kolman's Theorem 1 is
+proven for; this simplified rounding always returns a valid 2/3-balanced
+cut from the genuine ARV embedding, but does not carry that proven bound.
 """
 from __future__ import annotations
 
@@ -16,13 +18,7 @@ from typing import Optional, Set, Hashable, List, Tuple
 
 import numpy as np
 import networkx as nx
-
-try:
-    import cvxpy as cp
-except ImportError as e:
-    raise ImportError(
-        "stc_arv requires cvxpy. Install with: pip install cvxpy"
-    ) from e
+import cvxpy as cp
 
 Node = Hashable
 
@@ -136,12 +132,15 @@ def arv_balanced_cut(
         seed: Optional[int] = None,
 ) -> Set[Node]:
     """
-    ARV balanced-cut oracle;
-    - solves ARV SDP,
-    - performs logn random projection rounds
-    - returns one side of the cheapest 2/3-balanced sweep cut found in the run
+    ARV balanced-cut oracle:
+    - solves the ARV SDP relaxation,
+    - performs O(log n) random projection rounds,
+    - returns one side of the cheapest 2/3-balanced sweep cut found.
 
-    By THM1 of Kolman 2025, the returned cut has cost at most O(sqrt(log n)) * OPT bisection cost (its randomized algo, so we can only state such being true with high probab)
+    The returned cut is always a valid 2/3-balanced cut. The O(sqrt(log n))
+    bound of ARV / Kolman's Theorem 1 is proven for the full ARV rounding,
+    which we simplify here (see module docstring), so that bound does not
+    formally attach to this implementation.
     """
     if not nx.is_connected(H): raise ValueError("H must be connected.")
 

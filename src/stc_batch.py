@@ -2,18 +2,16 @@ from __future__ import annotations
 
 import argparse
 import csv
-import time
 import signal
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Sequence
 import networkx as nx
 
-from src import stc_okamoto, stc_kolman, stc_core
+from src import stc_okamoto, stc_kolman
 from src.simple_cache import SimpleCache
-from stc_core import compute_tree_congestion, graph_statistics
-from stc_draw import draw_graph_with_tree
-from stc_io import GraphInstance, load_graph_folder
+from src.stc_core import compute_tree_congestion, graph_statistics, CongestionResult
+from src.stc_io import GraphInstance, load_graph_folder
 
 
 @dataclass
@@ -33,34 +31,17 @@ class MethodRun:
     tree: nx.Graph
     runtime_seconds: float
     max_congestion: int
-    congestion: object | None = None
+    congestion: CongestionResult | None = None
 
-METHOD_TIMEOUT_SECONDS = 60
+METHOD_TIMEOUT_SECONDS = 345600 #the wallclock has been set on einfracz and this value was spiked by 3 extra digits so it would not cause any issue but i didnt want to change code much so rather fix it like this
+
 class _MethodTimeout(Exception):
     pass
 
 def _timeout_handler(signum, frame):
     raise _MethodTimeout()
 
-def _draw_output_path(drawings_root: str | Path, input_root: str | Path, instance: GraphInstance, method: str) -> Path:
-    drawings_root = Path(drawings_root)
-    input_root = Path(input_root)
-
-    subdir = drawings_root / input_root.name
-    if instance.graph_family != ".":
-        subdir = subdir / instance.graph_family
-    subdir.mkdir(parents=True, exist_ok=True)
-    return subdir / f"drawing_of_{instance.graph_label}__{method}.png"
-
 def _run_method(G: nx.Graph, method: str, *, okamoto_upper_bound: int | None = None) -> MethodRun:
-    # baseline just to verify stuff
-    if method == "bfs":
-        start = time.perf_counter()
-        T = stc_core.bfs_tree(G)
-        runtime = time.perf_counter() - start
-        congestion = compute_tree_congestion(G, T)
-        return MethodRun(tree=T,runtime_seconds=runtime,max_congestion=congestion.max_congestion,congestion=congestion)
-
     if method == "okamoto_exact":
         result = stc_okamoto.okamoto_exact_stc_simple(G)
         congestion = compute_tree_congestion(G, result.tree)
@@ -105,9 +86,6 @@ def run_method_on_graph(
         instance: GraphInstance,
         method: str,
         *,
-        draw: bool = True,
-        drawings_root: str | Path | None = None,
-        input_root: str | Path | None = None,
         okamoto_upper_bound: int | None = None,
         timeout_seconds: int = METHOD_TIMEOUT_SECONDS,
 ) -> ExperimentRow:
@@ -134,20 +112,6 @@ def run_method_on_graph(
         old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
         signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
 
-        if draw and drawings_root is not None and input_root is not None:
-            congestion = run.congestion
-            if congestion is None:
-                congestion = compute_tree_congestion(instance.graph, run.tree)
-
-            out_path = _draw_output_path(drawings_root, input_root, instance, method)
-            draw_graph_with_tree(
-                instance.graph,
-                run.tree,
-                congestion=congestion,
-                title=f"{instance.graph_label} [{method}] cong={row.max_congestion}",
-                save_path=out_path,
-                show=False,
-            )
     except _MethodTimeout:
         row.status = "TLE"
         row.runtime_seconds = float(timeout_seconds)
@@ -180,67 +144,45 @@ def run_method_on_graph(
 def run_graph_instance(
         instance: GraphInstance,
         *,
-        draw: bool = True,
-        drawings_root: str | Path | None = None,
         input_root: str | Path | None = None,
         timeout_seconds: int = METHOD_TIMEOUT_SECONDS,
         kolman_timeout_seconds: int | None = None,
 ) -> list[ExperimentRow]:
+
     rows: list[ExperimentRow] = []
-
     if kolman_timeout_seconds is None:
-        kolman_timeout_seconds = timeout_seconds * 5
-
-    bfs_row = run_method_on_graph(
-        instance,
-        "bfs",
-        draw=draw,
-        drawings_root=drawings_root,
-        input_root=input_root,
-        timeout_seconds=timeout_seconds,
-    )
-    rows.append(bfs_row)
+        kolman_timeout_seconds = timeout_seconds
 
     kolman_row = run_method_on_graph(
         instance,
         "kolman",
-        draw=draw,
-        drawings_root=drawings_root,
         input_root=input_root,
         timeout_seconds=kolman_timeout_seconds,
     )
     rows.append(kolman_row)
 
-    upper_bounds = [
-        row.max_congestion
-        for row in (bfs_row, kolman_row)
-        if row.status == "ok" and row.max_congestion is not None
-    ]
-    okamoto_upper_bound = min(upper_bounds) if upper_bounds else None
+    okamoto_upper_bound = None
+    if kolman_row.status == "ok" and kolman_row.max_congestion is not None:
+        okamoto_upper_bound = kolman_row.max_congestion
 
     okamoto_row = run_method_on_graph(
         instance,
         "okamoto_exact",
-        draw=draw,
-        drawings_root=drawings_root,
         input_root=input_root,
         okamoto_upper_bound=okamoto_upper_bound,
     )
     rows.append(okamoto_row)
 
-    if okamoto_row.status == "ok":
-        for other in (bfs_row, kolman_row):
-            if (
-                    other.status == "ok"
-                    and other.max_congestion is not None
-                    and okamoto_row.max_congestion is not None
-                    and okamoto_row.max_congestion > other.max_congestion
-            ):
-                raise RuntimeError(
-                    f"Exact result worse than {other.method} on "
-                    f"{instance.graph_family}/{instance.graph_label}: "
-                    f"exact={okamoto_row.max_congestion}, {other.method}={other.max_congestion}"
-                )
+    if (okamoto_row.status == "ok"
+        and kolman_row.status == "ok"
+        and okamoto_row.max_congestion is not None
+        and kolman_row.max_congestion is not None
+        and okamoto_row.max_congestion > kolman_row.max_congestion):
+        raise RuntimeError(
+            f"Exact result worse than koolman on "
+            f"{instance.graph_family}/{instance.graph_label}: "
+            f"exact={okamoto_row.max_congestion}, kolman={kolman_row.max_congestion}"
+        )
     return rows
 
 
@@ -261,9 +203,7 @@ def run_graph_folder(
         input_root: str | Path,
         output_csv: str | Path,
         *,
-        drawings_root: str | Path | None = None,
         normalize_labels_flag: bool = False,
-        draw: bool = True,
         timeout_seconds: int = METHOD_TIMEOUT_SECONDS,
 ) -> list[ExperimentRow]:
     input_root = Path(input_root)
@@ -278,8 +218,6 @@ def run_graph_folder(
 
         graph_rows = run_graph_instance(
             instance,
-            draw=draw,
-            drawings_root=drawings_root,
             input_root=input_root,
             timeout_seconds=timeout_seconds,
         )
@@ -301,37 +239,41 @@ def run_graph_folder(
 
 
 if __name__ == "__main__":
+    import os
     project_root = Path(__file__).resolve().parents[1]
     CACHE_DIR = project_root / "results" / "json"
-    cache = SimpleCache(CACHE_DIR / "cache.json")
+
+    array_id = os.environ.get("PBS_ARRAYID") or os.environ.get("PBS_ARRAY_INDEX")
+    job_id = os.environ.get("PBS_JOBID", "").split(".")[0]
+    if array_id is not None:
+        cache_filename = f"cache_array_{array_id}.json"
+    elif job_id:
+        cache_filename = f"cache_job_{job_id}.json"
+    else:
+        cache_filename = "cache.json"
+
+    cache = SimpleCache(CACHE_DIR / cache_filename)
+    print(f"Using cache file: {CACHE_DIR / cache_filename}")
+
     default_input = project_root / "data"
-    default_output = project_root / "results" / "csv" / "batch_results.csv"
-    default_drawings = project_root / "results" / "drawings"
+    default_output = project_root / "results" / "csv" / "batch_results.csv" #deprecated but whatever
+    default_drawings = project_root / "results" / "drawings" #useless
 
     parser = argparse.ArgumentParser(description="Run STC methods on a folder of adjacency-list graphs.")
     parser.add_argument("input_root", nargs="?", default=str(default_input), help="Root directory with graph files")
     parser.add_argument("output_csv", nargs="?", default=str(default_output), help="Where to write CSV results")
-    parser.add_argument("--drawings-root", default=str(default_drawings), help="Root directory for saved drawings")
     parser.add_argument("--normalize-labels", action="store_true")
-    # parser.add_argument("--draw", action="store_true")
-    parser.add_argument("--no-draw", action="store_false", dest="draw")
-    parser.set_defaults(draw=True)
     parser.add_argument("--timeout-seconds", type=int, default=METHOD_TIMEOUT_SECONDS, help="Per-method timeout in seconds")
-
     args = parser.parse_args()
 
     print(f"Input root: {args.input_root}")
     print(f"Output CSV: {args.output_csv}")
-    print(f"Drawings root: {args.drawings_root}")
-    print(f"Draw enabled: {args.draw}")
     print("Starting batch run...")
 
     rows = run_graph_folder(
         args.input_root,
         args.output_csv,
-        drawings_root=args.drawings_root,
         normalize_labels_flag=args.normalize_labels,
-        draw=args.draw,
         timeout_seconds=args.timeout_seconds,
     )
-    print(f"Wrote {len(rows)} detailed rows to {args.output_csv}")
+    print(f"Wrote {len(rows)} rows to {args.output_csv}")

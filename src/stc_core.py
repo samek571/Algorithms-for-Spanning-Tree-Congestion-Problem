@@ -17,16 +17,10 @@ class CongestionResult:
 
 #helper
 def canon_edge(u: Node, v: Node) -> tuple[Hashable]:
-    """Canonical undir edge representation, so we are consistent"""
     return tuple(sorted((u, v)))
 
 #helper
-def choose_root_by_degree(G: nx.Graph) -> Node:
-    return max(G.nodes(), key=lambda x: (G.degree[x], repr(x)))
-
-#helper
 def validate_tree(G: nx.Graph, T: nx.Graph) -> None:
-    """Maximal connected acyclic tree on induced edges using all vertices = spanning tree"""
     if set(G.nodes()) != set(T.nodes()):
         raise ValueError("T must use exactly the same vertex set as G.")
     if T.number_of_edges() != G.number_of_nodes() - 1:
@@ -245,15 +239,3 @@ class _DSU:
         if self.rank[ra] == self.rank[rb]:
             self.rank[ra] += 1
         return True
-
-
-#####3 bfs baseline
-#tree builder
-def bfs_tree(G: nx.Graph, root: Optional[Node] = None) -> nx.Graph:
-    """Baseline: cheap runtime + guaranteed spanning tree (but not minimal), sanity check..."""
-    if root is None:
-        root = choose_root_by_degree(G)
-    T = nx.Graph()
-    T.add_nodes_from(G.nodes())
-    T.add_edges_from(nx.bfs_edges(G, root))
-    return T
